@@ -3,6 +3,7 @@ from django.test import TestCase, Client
 from django.test import TestCase, override_settings
 from posts.models import Post, Group, Comment, Follow
 from django.urls import reverse
+from django.core.cache import cache
 
 
 TEST_CACHE = {
@@ -17,7 +18,9 @@ User = get_user_model()
 class TestPostsUnauthorized(TestCase):
     def setUp(self):
         self.client = Client()
-        self.user = User.objects.create_user(username='test', email='bk@gmail.com', password=12345)
+        self.user = User.objects.create_user(username='test',
+                                             email='bk@gmail.com',
+                                             password=12345)
 
     def test_no_auth_user_redirect(self):
         resp = self.client.post(
@@ -29,10 +32,13 @@ class TestPostsUnauthorized(TestCase):
 
     def test_comment(self):
         post = Post.objects.create(text='abcdefg', author=self.user)
-        response = self.client.get(f"/{self.user.username}/{post.pk}/comment")
-        self.assertRedirects(response, f'/auth/login/?next=/{self.user.username}/{post.pk}/comment', status_code=302, target_status_code=200)
-        self.client.login(username='test', password=12345)
-        self.client.post(f"/{self.user.username}/{post.pk}/comment", {'text': 'pula'})
+        response = self.client.get(reverse('add_comment', args=['mike', '1']))
+        self.assertRedirects(response,
+                             f'/auth/login/?next=/'
+                             f'{self.user.username}/'
+                             f'{post.pk}/comment',
+                             status_code=302,
+                             target_status_code=200)
         comment = Comment.objects.filter(text='pula').count()
         self.assertNotEqual(comment, 0)
 
@@ -85,22 +91,30 @@ class TestPostsAuthorized(TestCase):
 
     @override_settings(CACHES=TEST_CACHE)
     def test_new_post(self):
-        post = Post.objects.create(text='text', author=self.user, group=self.group)
+        post = Post.objects.create(text='text',
+                                   author=self.user,
+                                   group=self.group)
         list_urls = [
             reverse('index'),
             reverse('profile', kwargs={'username': self.user.username}),
-            reverse('post', kwargs={'username': self.user.username, 'post_id': post.id}),
+            reverse('post',
+                    kwargs={'username': self.user.username,
+                            'post_id': post.id}),
         ]
         for url in list_urls:
-            self.check_contain_post(url, self.user, self.group, post.text)
+            with self.subTest(url=url):
+                self.check_contain_post(url, self.user, self.group, post.text)
 
     @override_settings(CACHES=TEST_CACHE)
     def test_edit_post(self):
-        post = Post.objects.create(text='text_test', author=self.user, group=self.group)
+        post = Post.objects.create(text='text_test',
+                                   author=self.user,
+                                   group=self.group)
         list_urls = [
             reverse('index'),
             reverse('profile', kwargs={'username': self.user.username}),
-            reverse('post', kwargs={'username': self.user.username, 'post_id': post.id}),
+            reverse('post', kwargs={'username': self.user.username,
+                                    'post_id': post.id}),
         ]
         new_group = Group.objects.create(
             title="new_title",
@@ -119,8 +133,11 @@ class TestPostsAuthorized(TestCase):
         self.client.post(edit_url, data=post_data)
 
         for url in list_urls:
-            self.check_contain_post(url, self.user, new_group, post_data['text'])
-
+            with self.subTest(url=url):
+                self.check_contain_post(url,
+                                        self.user,
+                                        new_group,
+                                        post_data['text'])
 
 
 class TestCache(TestCase):
@@ -162,7 +179,8 @@ class TestFollowSystem(TestCase):
 
     def test_unfollow(self):
         response = self.client.get(
-            reverse('profile_unfollow', kwargs={'username': self.following}),
+            reverse('profile_unfollow',
+                    kwargs={'username': self.following}),
             follow=True)
         self.assertEqual(response.status_code, 200)
         self.assertFalse(self.link.exists())
@@ -185,12 +203,14 @@ class TestComments(TestCase):
         self.client = Client()
         self.user = User.objects.create_user(username='user',
                                              password='password')
-        self.post = Post.objects.create(author=self.user, text='TestText')
+        self.post = Post.objects.create(author=self.user,
+                                        text='TestText')
         self.logged_client.force_login(self.user)
 
     def test_comment(self):
-        comment_url = reverse('add_comment', kwargs={'username': self.user,
-                                                     'post_id': self.post.id})
+        comment_url = reverse('add_comment',
+                              kwargs={'username': self.user,
+                                      'post_id': self.post.id})
         self.logged_client.post(comment_url, {'text': 'Test Comment'},
                                 follow=True)
 
@@ -203,3 +223,46 @@ class TestComments(TestCase):
                          follow=True)
         self.assertEqual(0, Comment.objects.filter(
             text='Unlogged Comment').count())
+
+
+class ImageTests(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.client = Client()
+        self.user = User.objects.create_user(
+            username="tester", email="Test@mail.com", password="12345"
+        )
+        self.client.force_login(self.user)
+        self.group = Group.objects.create(
+            title="ping-echo",
+            slug="ping-group",
+            description="Ping-ping-ping"
+        )
+
+    def test_image(self):
+        with open("media/posts/-4FPtl2kfl8.jpg", "rb") as fp:
+            self.client.post(
+                "/new/", {"group": self.group.pk,
+                          "text": "Ping", "image": fp}
+            )
+        response = self.client.get("/")
+        self.assertContains(response, "<img", status_code=200)
+        response = self.client.get("/tester/1/")
+        self.assertContains(response, "<img ", status_code=200)
+        response = self.client.get("/tester/")
+        self.assertContains(response, "<img ", status_code=200)
+        response = self.client.get("/group/ping-group/")
+        self.assertContains(response, "<img ", status_code=200)
+
+    def test_image_upload(self):
+        with open("posts/fixtures/to-do.txt", "rb") as fp:
+            response = self.client.post(
+                "/new/", {"group": self.group.pk,
+                          "text": "to-do", "image": fp}
+            )
+        self.assertFormError(
+            response,
+            "form",
+            "image",
+            "Загрузите правильное изображение. Файл, который вы загрузили, поврежден.",
+        )
