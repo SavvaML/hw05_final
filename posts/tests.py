@@ -4,7 +4,9 @@ from django.test import TestCase, override_settings
 from posts.models import Post, Group, Comment, Follow
 from django.urls import reverse
 from django.core.cache import cache
+import tempfile
 
+from PIL import Image
 
 TEST_CACHE = {
     'default': {
@@ -238,31 +240,47 @@ class ImageTests(TestCase):
             slug="ping-group",
             description="Ping-ping-ping"
         )
+        self.post = Post.objects.create(text='hi', group=self.group,
+                                        author=self.user)
+        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as img:
+            image = Image.new('RGB', (200, 200), 'white')
+            image.save(img, 'PNG')
+        self.image = open(img.name, mode='rb')
+
+        with tempfile.NamedTemporaryFile(suffix='.doc',
+                                         delete=False) as not_img:
+            not_img.write(b'test')
+        self.not_image = open(not_img.name, 'rb')
 
     def test_image(self):
-        with open("media/posts/-4FPtl2kfl8.jpg", "rb") as fp:
-            self.client.post(
-                "/new/", {"group": self.group.pk,
-                          "text": "Ping", "image": fp}
-            )
-        response = self.client.get("/")
-        self.assertContains(response, "<img", status_code=200)
-        response = self.client.get("/tester/1/")
-        self.assertContains(response, "<img ", status_code=200)
-        response = self.client.get("/tester/")
-        self.assertContains(response, "<img ", status_code=200)
-        response = self.client.get("/group/ping-group/")
-        self.assertContains(response, "<img ", status_code=200)
+        with self.image as img:
+            self.client.post(reverse('post_edit',
+                                     kwargs={'username': self.user,
+                                             'post_id': self.post.id}),
+                             {'group': self.group.id,
+                              'text': 'post with image',
+                              'image': img}, redirect=True)
+
+        tag = '<img class='
+        response_profile = self.client.get(reverse(
+            "/tester/", kwargs={'username': self.user.username}))
+        self.assertContains(response_profile, tag)
+        response_index = self.client.get(reverse("/"))
+        self.assertContains(response_index, tag)
+        response_group = self.client.get(reverse(
+            "/group/ping-group/", kwargs={'slug': self.group.slug}))
+        self.assertContains(response_group, tag)
 
     def test_image_upload(self):
-        with open("posts/fixtures/to-do.txt", "rb") as fp:
-            response = self.client.post(
-                "/new/", {"group": self.group.pk,
-                          "text": "to-do", "image": fp}
-            )
-        self.assertFormError(
-            response,
-            "form",
-            "image",
-            "Загрузите правильное изображение. Файл, который вы загрузили, поврежден.",
-        )
+        with self.not_image as img:
+            wrong_img = self.client.post(reverse('post_edit',
+                                                 kwargs={'username': self.user,
+                                                         'post_id':
+                                                             self.post.id}),
+                                         {'group': self.group.id,
+                                          'text': 'post with image',
+                                          'image': img}, redirect=True)
+
+        error = ('Загрузите правильное изображение. Файл, который вы '
+                 'загрузили, поврежден или не является изображением.')
+        self.assertFormError(wrong_img, 'form', 'image', error)

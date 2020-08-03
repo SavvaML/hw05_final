@@ -53,3 +53,4 @@ class Follow(models.Model):
 
     class Meta:
         ordering = ["-pub_date"]
+        unique_together = ["user", "author"]
